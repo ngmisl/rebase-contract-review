@@ -12,37 +12,10 @@ contract MockERC20 is ERC20 {
     }
 }
 
-contract ReentrancyAttacker {
-    Rebase public rebase;
-    MockERC20 public token;
-
-    constructor(Rebase _rebase, MockERC20 _token) {
-        rebase = _rebase;
-        token = _token;
-    }
-
-    // Fallback function to trigger reentrancy
-    receive() external payable {
-        if (address(rebase).balance >= 1 ether) {
-            address[] memory apps = new address[](0);
-            rebase.stakeETH{value: 1 ether}(apps);
-        }
-    }
-
-    function attack() external payable {
-        require(msg.value >= 1 ether, "Need at least 1 ether to attack");
-
-        // Start the attack by staking Ether
-        address[] memory apps = new address[](0);
-        rebase.stakeETH{value: 1 ether}(apps);
-    }
-}
-
 contract RebaseTest is Test {
     Rebase rebase;
     MockERC20 token;
-    ReentrancyAttacker attackerContract;
-    address attacker;
+    address user;
 
     function setUp() public {
         // Deploy the Rebase contract
@@ -51,46 +24,100 @@ contract RebaseTest is Test {
         // Deploy a mock ERC20 token contract
         token = new MockERC20();
 
-        // Deploy the reentrancy attacker contract
-        attackerContract = new ReentrancyAttacker(rebase, token);
+        // Assign a user address
+        user = address(0xBEEF);
 
-        // Mint tokens to the attacker address
-        attacker = address(0xBEEF);
-        token.mint(attacker, 100 ether);
+        // Mint tokens to the user address
+        token.mint(user, 100 ether);
 
         // Label addresses for better readability in the test output
         vm.label(address(rebase), "Rebase");
         vm.label(address(token), "Token");
-        vm.label(attacker, "Attacker");
-        vm.label(address(attackerContract), "ReentrancyAttacker");
-
-        // Fund the attacker contract with some Ether
-        vm.deal(address(attackerContract), 10 ether);
+        vm.label(user, "User");
     }
 
-    function testReentrancyAttack() public {
-        vm.startPrank(attacker);
+    function testStakeAndUnstake() public {
+        // Start the prank for the user
+        vm.startPrank(user);
 
-        // Perform the reentrancy attack
-        (bool success, bytes memory data) = address(attackerContract).call{
-            value: 1 ether
-        }(abi.encodeWithSignature("attack()"));
+        // Approve the Rebase contract to spend user's tokens
+        token.approve(address(rebase), 100 ether);
+
+        // Create an empty address array for the apps parameter
+        address[] memory apps = new address[](0);
+
+        // Call the stake function to stake tokens
+        rebase.stake(address(token), 50 ether, apps);
+
+        // Check the staked balance
+        uint256 stakedBalance = rebase.getUserTokenStake(user, address(token));
+        assertEq(stakedBalance, 50 ether, "Staked balance should be 50 ether");
+
+        // Call the unstake function to unstake tokens
+        rebase.unstake(address(token), 50 ether);
+
+        // Check the staked balance after unstaking
+        stakedBalance = rebase.getUserTokenStake(user, address(token));
+        assertEq(
+            stakedBalance,
+            0,
+            "Staked balance should be 0 ether after unstaking"
+        );
 
         vm.stopPrank();
+    }
 
-        // Check for success
-        require(success, "Reentrancy attack failed");
+    function testRestake() public {
+        // Start the prank for the user
+        vm.startPrank(user);
 
-        // Log the error data if any
-        if (!success) {
-            emit log_bytes(data);
-        }
+        // Approve the Rebase contract to spend user's tokens
+        token.approve(address(rebase), 100 ether);
 
-        // Assert that the reentrancy attack was successful
-        assertGt(
-            address(attackerContract).balance,
-            1 ether,
-            "Reentrancy attack failed"
+        // Create an empty address array for the apps parameter
+        address[] memory apps = new address[](0);
+
+        // Call the stake function to stake tokens
+        rebase.stake(address(token), 50 ether, apps);
+
+        // Verify the staked balance
+        uint256 stakedBalance = rebase.getUserTokenStake(user, address(token));
+        assertEq(stakedBalance, 50 ether, "Staked balance should be 50 ether");
+
+        // Add a new app to restake to
+        address newApp = address(0xDEAD);
+        address[] memory newApps = new address[](1);
+        newApps[0] = newApp;
+
+        // Call the restake function to restake tokens to the new app
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(token);
+        rebase.restake(newApps, tokens);
+
+        // Verify the restaked balance remains the same
+        stakedBalance = rebase.getUserTokenStake(user, address(token));
+        assertEq(
+            stakedBalance,
+            50 ether,
+            "Staked balance should remain 50 ether after restaking"
         );
+
+        // Verify the app is added to the user's token apps
+        address[] memory userTokenApps = rebase.getUserTokenApps(
+            user,
+            address(token)
+        );
+        assertEq(
+            userTokenApps.length,
+            1,
+            "User should have one app associated with the token"
+        );
+        assertEq(
+            userTokenApps[0],
+            newApp,
+            "The new app should be associated with the token"
+        );
+
+        vm.stopPrank();
     }
 }
